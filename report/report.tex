@@ -513,6 +513,20 @@ cycles,instructions,branches,branch-misses,cache-references,cache-misses \
   ./bin/knapsack 2>&1 | tee results/knapsack_perf.txt
 \end{lstlisting}
 
+\subsection{Building ChampSim Binaries}
+\begin{lstlisting}
+# Build 32 KiB L1D binary (32 sets x 8-way)
+cd ~/champsim
+./config.sh ~/perf-champsim-project/champsim_config_32kb.json
+make -j$(nproc)
+cp bin/champsim ~/perf-champsim-project/bin/champsim_l1d_32kb
+
+# Build 64 KiB L1D binary (64 sets x 8-way)
+./config.sh ~/perf-champsim-project/champsim_config_64kb.json
+make -j$(nproc)
+cp bin/champsim ~/perf-champsim-project/bin/champsim_l1d_64kb
+\end{lstlisting}
+
 \subsection{Running ChampSim — 32\,KiB Control}
 \begin{lstlisting}
 cd ~/perf-champsim-project

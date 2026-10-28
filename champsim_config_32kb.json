@@ -1,111 +1,36 @@
 {
-  "LLC": {
-    "sets": 2048,
-    "ways": 16,
-    "rq_size": 32,
-    "wq_size": 32,
-    "pq_size": 8,
-    "mshr_size": 16,
-    "hit_latency": 20,
-    "fill_latency": 1,
-    "max_read": 2,
-    "max_write": 2,
-    "prefetch_as_load": false,
-    "virtual_prefetch": false,
-    "wq_check_full_addr": false,
-    "prefetcher": "no_prefetcher",
-    "replacement": "lru"
-  },
-  "L2C": {
-    "sets": 1024,
+  "ooo_cpu": [
+    {
+      "branch_predictor": "bimodal",
+      "btb": "basic_btb"
+    }
+  ],
+  "L1I": {
+    "sets": 64,
     "ways": 8,
-    "rq_size": 32,
-    "wq_size": 32,
-    "pq_size": 8,
-    "mshr_size": 16,
-    "hit_latency": 10,
-    "fill_latency": 1,
-    "max_read": 1,
-    "max_write": 1,
-    "prefetch_as_load": false,
-    "virtual_prefetch": false,
-    "wq_check_full_addr": false,
-    "prefetcher": "no_prefetcher",
-    "replacement": "lru"
+    "latency": 4,
+    "replacement": "lru",
+    "prefetcher": "no"
   },
   "L1D": {
     "sets": 32,
     "ways": 8,
-    "rq_size": 64,
-    "wq_size": 64,
-    "pq_size": 8,
-    "mshr_size": 16,
-    "hit_latency": 5,
-    "fill_latency": 1,
-    "max_read": 2,
-    "max_write": 2,
-    "prefetch_as_load": false,
-    "virtual_prefetch": false,
-    "wq_check_full_addr": true,
-    "prefetcher": "no_prefetcher",
-    "replacement": "lru"
+    "latency": 5,
+    "replacement": "lru",
+    "prefetcher": "no"
   },
-  "L1I": {
-    "sets": 64,
+  "L2C": {
+    "sets": 1024,
     "ways": 8,
-    "rq_size": 64,
-    "wq_size": 64,
-    "pq_size": 8,
-    "mshr_size": 8,
-    "hit_latency": 4,
-    "fill_latency": 1,
-    "max_read": 2,
-    "max_write": 2,
-    "prefetch_as_load": false,
-    "virtual_prefetch": true,
-    "wq_check_full_addr": false,
-    "prefetcher": "no_prefetcher",
-    "replacement": "lru"
+    "latency": 10,
+    "replacement": "lru",
+    "prefetcher": "no"
   },
-  "ITLB": { "sets": 16, "ways": 4 },
-  "DTLB": { "sets": 16, "ways": 4 },
-  "STLB": { "sets": 128, "ways": 12 },
-  "CPU": {
-    "frequency": 4000,
-    "dib_set": 32,
-    "dib_way": 8,
-    "dib_window": 16,
-    "ifetch_buffer_size": 64,
-    "decode_buffer_size": 32,
-    "dispatch_buffer_size": 32,
-    "rob_size": 352,
-    "lq_size": 192,
-    "sq_size": 114,
-    "fetch_width": 6,
-    "decode_width": 6,
-    "dispatch_width": 6,
-    "execute_width": 6,
-    "lq_width": 2,
-    "sq_width": 2,
-    "retire_width": 6,
-    "mispredict_penalty": 1,
-    "scheduler_size": 128,
-    "decode_latency": 1,
-    "dispatch_latency": 1,
-    "schedule_latency": 0,
-    "execute_latency": 0,
-    "branch_predictor": "bimodal",
-    "btb": "basic_btb"
-  },
-  "DRAM": {
-    "io_freq": 3200,
-    "channels": 1,
-    "ranks": 1,
-    "banks": 8,
-    "rows": 65536,
-    "columns": 128,
-    "lines_per_column": 8,
-    "channel_width": 8,
-    "wq_check_full_addr": false
+  "LLC": {
+    "sets": 2048,
+    "ways": 16,
+    "latency": 20,
+    "replacement": "lru",
+    "prefetcher": "no"
   }
 }

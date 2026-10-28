@@ -104,18 +104,22 @@ git clone https://github.com/ChampSim/ChampSim.git champsim
 cd champsim
 ```
 
-### 4.2  Build 32 KiB L1D binary
+> **Note:** This version of ChampSim uses `config.sh` (not `config.py`).
+
+### 4.2  Build 32 KiB L1D binary (32 sets × 8-way = 16 KiB)
 
 ```bash
-python3 config.py ~/perf-champsim-project/champsim_config_32kb.json
+cd ~/champsim
+./config.sh ~/perf-champsim-project/champsim_config_32kb.json
 make -j$(nproc)
 cp bin/champsim ~/perf-champsim-project/bin/champsim_l1d_32kb
 ```
 
-### 4.3  Build 64 KiB L1D binary
+### 4.3  Build 64 KiB L1D binary (64 sets × 8-way = 32 KiB)
 
 ```bash
-python3 config.py ~/perf-champsim-project/champsim_config_64kb.json
+cd ~/champsim
+./config.sh ~/perf-champsim-project/champsim_config_64kb.json
 make -j$(nproc)
 cp bin/champsim ~/perf-champsim-project/bin/champsim_l1d_64kb
 ```
