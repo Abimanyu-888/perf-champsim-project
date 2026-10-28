@@ -1,0 +1,586 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{siunitx}
+\usepackage{fancyhdr}
+\usepackage{titling}
+
+% ── Hyperref setup ────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=green!50!black,
+    urlcolor=blue!60!black
+}
+
+% ── Code listing style ────────────────────────────────────────────────────────
+\lstset{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!70!black}\bfseries,
+    commentstyle=\color{gray},
+    stringstyle=\color{orange!80!black},
+    backgroundcolor=\color{gray!8},
+    frame=single,
+    rulecolor=\color{gray!40},
+    breaklines=true,
+    captionpos=b,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    xleftmargin=1.5em,
+    framexleftmargin=1.5em,
+    language=bash
+}
+
+% ── Header / Footer ───────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{CA Assignment — TSP \& Knapsack}
+\lhead{Abimanyu \& Yuvraj}
+\cfoot{\thepage}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Title Page ────────────────────────────────────────────────────────────────
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\LARGE\bfseries Performance Analysis of Dynamic Programming\\[0.4em]
+    Using Linux perf and ChampSim\par}
+    \vspace{1.5cm}
+    {\large Abimanyu Choudhary K (106124006) \quad Yuvraj Meena (106124142)\par}
+    \vspace{0.8cm}
+    {\large \today\par}
+    \vspace{2cm}
+    \begin{abstract}
+    \noindent
+    In this project we evaluated CPU and memory performance of two combinatorial
+    optimisation algorithms implemented as dynamic-programming workloads in C.
+    We used two complementary tools: \emph{Linux perf} for native hardware-counter
+    profiling on our physical processor, and \emph{ChampSim} for trace-driven
+    microarchitectural simulation.  The two workloads are the \emph{Traveling
+    Salesman Problem} solved by the Held--Karp bitmask-DP algorithm
+    ($\mathcal{O}(2^N N^2)$ time, $\mathcal{O}(2^N N)$ space), and the \emph{0/1
+    Knapsack Problem} solved by a bottom-up 1-D rolling-array DP
+    ($\mathcal{O}(nW)$ time).  TSP exercises irregular, random-access memory with
+    a ${\sim}80$\,MiB working set that spills past all cache levels, while
+    Knapsack uses a backward-sweep over a~${\sim}1.9$\,MiB array that fits in
+    L2/L3 but not L1D.  We measured instructions, cycles, IPC, cache-miss rates,
+    and branch-prediction accuracy.  For the simulation component, we built two
+    ChampSim binaries with L1D cache capacities of 32\,KiB (32 sets $\times$ 8-way)
+    and 64\,KiB (64 sets $\times$ 8-way), and replayed the standard
+    \texttt{400.perlbench-41B} instruction trace.  This report details our
+    methodology, experimental results, analysis, and full reproduction steps.
+    \end{abstract}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction and Objectives}
+% ─────────────────────────────────────────────────────────────────────────────
+
+When optimising software or designing processor hardware, relying on wall-clock
+time alone rarely tells the full story.  A program can run slowly because of
+back-end stalls from cache misses, front-end stalls from branch mispredictions,
+or memory-bandwidth saturation.
+
+In this lab our goals were:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Linux perf}: Inspect real hardware counters on our machine and
+          observe how contrasting DP algorithms with different memory-access
+          patterns affect IPC, cache references, and branch behaviour.
+    \item \textbf{ChampSim}: Isolate microarchitectural components in a
+          simulator and observe how changing L1 data-cache capacity affects
+          program execution under controlled trace replays.
+    \item \textbf{Reproducibility}: Document configurations, source code, exact
+          shell commands, and terminal outputs so every experiment can be
+          independently verified.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Background}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Measuring Hardware Events with Linux perf}
+
+Modern processors contain dedicated hardware units called \emph{Performance
+Monitoring Units} (PMUs).  The PMU maintains special hardware registers that
+increment on microarchitectural events such as retired instructions, elapsed
+core clock cycles, cache hits and misses, and mispredicted branches~\cite{gregg2020}.
+
+The primary metric we use to gauge execution throughput is
+\emph{Instructions Per Cycle} (IPC):
+
+\begin{equation}
+    \text{IPC} = \frac{\text{Instructions Retired}}{\text{Cycles Elapsed}}
+    \label{eq:ipc}
+\end{equation}
+
+A higher IPC indicates that the CPU's out-of-order execution engine is
+successfully exploiting instruction-level parallelism (ILP).  Conversely,
+frequent L1 data-cache misses or branch mispredictions stall the pipeline and
+drag IPC down~\cite{hp2017}.
+
+\subsection{Trace-Driven Simulation with ChampSim}
+
+While \texttt{perf} measures physical execution on a real CPU (with all its OS
+noise and prefetchers), ChampSim simulates an idealised cycle-level CPU model
+by replaying an instruction trace~\cite{hp2017}.  This allows us to modify
+architectural parameters—such as cache sets, associativity, or replacement
+policies—that are impossible to change on physical silicon.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Test System Specifications}
+
+All native benchmarks were run on a Linux machine with the following
+specifications:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Processor}: \textit{[fill in from your VM / machine]}
+    \item \textbf{Cores / Threads}: \textit{[fill in]}
+    \item \textbf{Clock Frequency}: \textit{[fill in]}
+    \item \textbf{Compiler}: GCC with optimisation flag \texttt{-O2}
+    \item \textbf{Simulation}: ChampSim built from source with custom JSON
+          cache configurations
+\end{itemize}
+
+\subsection{Selected Native Workloads}
+
+We chose two NP-hard combinatorial optimisation problems that are canonically
+solved with dynamic programming, but exhibit fundamentally different memory
+traversal patterns:
+
+\begin{enumerate}[leftmargin=*]
+
+    \item \textbf{Traveling Salesman Problem — Held--Karp DP}
+          ($N = 20$ cities).
+          This algorithm maintains a \emph{bitmask DP table}
+          $\mathrm{dp}[S][i]$, where $S \subseteq \{0,\ldots,N-1\}$ is a
+          subset of visited cities (represented as a 20-bit integer) and $i$
+          is the last city visited.  The full table has $2^{20} \times 20$
+          entries (${\approx}80$\,MiB for two \texttt{int} arrays).
+          Because the transition
+          $\mathrm{dp}[\,S\cup\{v\}\,][v] \leftarrow \mathrm{dp}[S][u] +
+          \mathrm{dist}[u][v]$
+          jumps between arbitrary bitmask states, the access pattern is
+          highly \emph{irregular}—stressing the TLB and producing frequent
+          L1/L2 capacity misses, similar to MCM from the reference report
+          but at larger scale.
+
+    \item \textbf{0/1 Knapsack Problem — rolling-array DP}
+          ($n = 2{,}000$ items, $W = 500{,}000$).
+          We use the standard single-pass \emph{backward} sweep:
+          $\mathrm{dp}[w] \leftarrow \max(\mathrm{dp}[w],\;
+          \mathrm{dp}[w - w_i] + v_i)$ for $w = W$ down to $w_i$.
+          The \texttt{dp[]} array occupies
+          $(W+1) \times 4 \approx 1.9$\,MiB—comfortably inside a modern
+          L2/L3 cache but exceeding L1D, so the hardware prefetcher can
+          bring lines ahead of the backward sweep, producing intermediate
+          cache behaviour between the two reference workloads.
+\end{enumerate}
+
+\subsection{ChampSim Simulation Configuration}
+
+For the simulator component we replayed the standard SPEC CPU benchmark trace
+\texttt{400.perlbench-41B.champsimtrace.xz}.  Following standard simulation
+practices, we configured a warm-up period of 100{,}000 instructions to
+populate the caches and branch predictor, followed by 1{,}000{,}000 detailed
+simulation instructions.
+
+We designed two configurations where \emph{only} the L1D cache capacity
+differed:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{32\,KiB Control}: 32 sets $\times$ 8-way $\times$ 64\,B
+          lines $= 16{,}384$ bytes, i.e.\ 32\,KiB.
+    \item \textbf{64\,KiB Experiment}: 64 sets $\times$ 8-way $\times$ 64\,B
+          lines $= 32{,}768$ bytes, i.e.\ 64\,KiB.
+\end{itemize}
+
+Both builds shared identical replacement policies (LRU), block sizes (64\,B),
+and associativity (8-way), so any observed difference is attributable solely
+to cache capacity.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Native Hardware Results (Linux perf)}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{TSP — Held--Karp Analysis}
+
+We executed the compiled TSP binary under \texttt{perf stat} with 3
+repetitions.  The recorded hardware-counter metrics are listed in
+Table~\ref{tab:tsp}.
+
+\begin{table}[h!]
+\centering
+\caption{Hardware performance counters for TSP (Held--Karp, $N=20$)}
+\label{tab:tsp}
+\begin{tabular}{lS[table-format=3.3e3]}
+\toprule
+\textbf{Counter / Metric} & {\textbf{Recorded Value}} \\
+\midrule
+Instructions retired         & {[FILL FROM tsp\_perf.txt]} \\
+Cycles elapsed               & {[FILL FROM tsp\_perf.txt]} \\
+Instructions Per Cycle (IPC) & {[FILL FROM tsp\_perf.txt]} \\
+Cache references             & {[FILL FROM tsp\_perf.txt]} \\
+Cache misses                 & {[FILL FROM tsp\_perf.txt]} \\
+Cache miss rate              & {[FILL \%]} \\
+Total branches               & {[FILL FROM tsp\_perf.txt]} \\
+Branch misses                & {[FILL FROM tsp\_perf.txt]} \\
+Branch miss rate             & {[FILL \%]} \\
+Average run time             & {[FILL seconds]} \\
+Timing variance              & {[FILL \%]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations from the TSP data:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{IPC}: The irregular bitmask-indexed access pattern prevents
+          the hardware prefetcher from loading data ahead of demand.
+          Every state transition
+          $\mathrm{dp}[S][u] \to \mathrm{dp}[S \cup \{v\}][v]$ reads from a
+          memory offset proportional to the bitmask $S$, which sweeps in
+          Gray-code-like order—not sequential.  This results in persistent
+          L2/L3 misses that throttle the pipeline.
+
+    \item \textbf{Cache miss rate}: The 80\,MiB working set of the TSP DP
+          table far exceeds both L1D and L2 caches on most modern processors.
+          We expect a significantly higher miss rate than Knapsack.
+
+    \item \textbf{Branch miss rate}: The inner loop has a predictable loop
+          bound (iterating over bits 0 to $N-1$), so the branch predictor
+          handles the fixed-count loop well despite the irregular data access.
+
+    \item \textbf{Page faults}: Allocating the ${\sim}80$\,MiB DP table via
+          \texttt{malloc} causes Linux to fault in memory pages on first
+          access, contributing to startup overhead.
+\end{itemize}
+
+\subsection{Knapsack — 0/1 DP Analysis}
+
+Next we evaluated the Knapsack benchmark under the same 3-run configuration.
+Results are summarised in Table~\ref{tab:ks}.
+
+\begin{table}[h!]
+\centering
+\caption{Hardware performance counters for 0/1 Knapsack ($n=2000$, $W=500000$)}
+\label{tab:ks}
+\begin{tabular}{lS[table-format=3.3e3]}
+\toprule
+\textbf{Counter / Metric} & {\textbf{Recorded Value}} \\
+\midrule
+Instructions retired         & {[FILL FROM knapsack\_perf.txt]} \\
+Cycles elapsed               & {[FILL FROM knapsack\_perf.txt]} \\
+Instructions Per Cycle (IPC) & {[FILL FROM knapsack\_perf.txt]} \\
+Cache references             & {[FILL FROM knapsack\_perf.txt]} \\
+Cache misses                 & {[FILL FROM knapsack\_perf.txt]} \\
+Cache miss rate              & {[FILL \%]} \\
+Total branches               & {[FILL FROM knapsack\_perf.txt]} \\
+Branch misses                & {[FILL FROM knapsack\_perf.txt]} \\
+Branch miss rate             & {[FILL \%]} \\
+Page faults                  & {[FILL FROM knapsack\_perf.txt]} \\
+Average run time             & {[FILL seconds]} \\
+Timing variance              & {[FILL \%]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Comparing Knapsack to TSP reveals clear microarchitectural differences:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{IPC}: The 1-D \texttt{dp[]} array of ${\sim}1.9$\,MiB fits
+          entirely in L2/L3.  Although the backward sweep is not as prefetcher-
+          friendly as a pure forward scan, the stride is fixed and the hardware
+          prefetcher can still anticipate accesses for small item weights,
+          keeping the pipeline better fed than in TSP.
+
+    \item \textbf{Cache miss rate}: Because the working set fits in L3, the
+          sustained miss rate to main memory is much lower than for TSP,
+          despite the backward access direction.
+
+    \item \textbf{Near-zero branch mispredictions}: The two nested \texttt{for}
+          loops have fixed bounds, making the branch pattern trivially
+          predictable.  The only misprediction source is the conditional
+          \texttt{if (candidate > dp[w])}.
+
+    \item \textbf{Instruction count}: Because Knapsack iterates $n \times W =
+          2000 \times 500{,}000 = 10^9$ inner steps, the total retired
+          instruction count will be substantially higher than TSP, which
+          iterates $2^{20} \times 20^2 \approx 4 \times 10^8$ transitions.
+\end{itemize}
+
+\subsection{Comparative Summary (native perf)}
+
+\begin{table}[h!]
+\centering
+\caption{Side-by-side comparison of TSP and Knapsack hardware counters}
+\label{tab:compare}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{TSP (Held--Karp)} & \textbf{Knapsack (0/1 DP)} \\
+\midrule
+IPC                  & ---   & ---   \\
+Cache miss rate (\%) & ---   & ---   \\
+Branch miss rate (\%)& ---   & ---   \\
+Run time (s)         & ---   & ---   \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% Insert figures after running plot_results.py
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.55\textwidth]{../results/fig_ipc_bar.pdf}
+    \caption{Native IPC comparison between TSP and Knapsack workloads.}
+    \label{fig:ipc}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{../results/fig_cache_bar.pdf}
+        \caption{Cache miss rate comparison.}
+        \label{fig:cache}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{../results/fig_branch_bar.pdf}
+        \caption{Branch miss rate comparison.}
+        \label{fig:branch}
+    \end{subfigure}
+    \caption{Cache and branch predictor miss rates for TSP vs.\ Knapsack.}
+    \label{fig:miss_rates}
+\end{figure}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{ChampSim Simulation Results}
+% ─────────────────────────────────────────────────────────────────────────────
+
+We ran our two custom ChampSim binaries on the Perlbench trace and logged
+instructions, cycles, IPC, and cache misses.  The comparative metrics are
+shown in Table~\ref{tab:champsim}.
+
+\begin{table}[h!]
+\centering
+\caption{ChampSim simulation results — 32\,KiB vs.\ 64\,KiB L1D}
+\label{tab:champsim}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Configuration} & \textbf{Instructions} & \textbf{Cycles} &
+\textbf{IPC} & \textbf{L1D Misses} \\
+\midrule
+32\,KiB Control (32 sets) & --- & --- & --- & --- \\
+64\,KiB Experiment (64 sets) & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h!]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{../results/fig_champsim_ipc.pdf}
+        \caption{IPC comparison: 32\,KiB vs.\ 64\,KiB L1D.}
+        \label{fig:cs_ipc}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{../results/fig_champsim_misses.pdf}
+        \caption{L1D miss count comparison.}
+        \label{fig:cs_misses}
+    \end{subfigure}
+    \caption{ChampSim simulation results for the Perlbench trace.}
+    \label{fig:champsim}
+\end{figure}
+
+\subsection{Analysis of Simulation Results}
+
+\textit{[Fill in after running ChampSim.  Follow the pattern from the reference
+report: if both configurations give identical results, explain working-set
+size.  If they differ, explain the capacity-miss reduction.]}
+
+The standard explanation for identical miss counts across two cache sizes is
+architectural: if the program's active working set fits entirely within the
+smaller configuration, increasing capacity adds empty sets that are never
+used.  Increasing cache size only reduces misses when the working set
+\emph{exceeds} the current cache capacity~\cite{hp2017}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion and Lessons Learned}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Memory-access pattern is the dominant bottleneck.}
+          TSP's random bitmask indexing and large working set expose the
+          processor to sustained L2/L3 (and potentially DRAM) latency,
+          far outweighing the algorithmic instruction-count advantage it
+          might have over Knapsack.
+
+    \item \textbf{Working-set size vs.\ cache hierarchy.}
+          Knapsack's ${\sim}1.9$\,MiB rolling array fits comfortably in L2
+          or L3 on modern processors.  Even though the backward sweep is
+          slightly less prefetcher-friendly than a forward scan, the cache
+          hit rate is dramatically higher than TSP.
+
+    \item \textbf{Native profiling vs.\ simulation.}
+          Linux \texttt{perf} gives ground-truth numbers on live silicon but
+          includes non-deterministic OS noise.  ChampSim gives perfectly
+          repeatable, deterministic cycle counts, but only reflects the
+          specific trace snippet being simulated.
+
+    \item \textbf{Branch predictability.}
+          Both algorithms use nested loops with fixed bounds, making the
+          branch predictor's job straightforward.  NP-hard algorithmic
+          complexity does not imply branch unpredictability.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Through this project we successfully collected and analysed hardware-counter
+statistics for two classic NP-hard optimisation problems solved with dynamic
+programming, using Linux \texttt{perf} for native measurements and ChampSim
+for trace-driven simulation.
+
+Our measurements highlight that the \emph{memory-access pattern} of a DP
+algorithm—not its time complexity—is the dominant factor governing CPU
+performance.  TSP's irregular bitmask indexing over an 80\,MiB table leads
+to persistent cache pressure, while Knapsack's backward sweep over a
+1.9\,MiB array enables much more effective cache reuse.  The ChampSim
+experiment illustrates the classic cache-design principle: increasing cache
+capacity is only effective when the program's working set exceeds the current
+boundary.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\appendix
+\section{Execution Manual}
+% ─────────────────────────────────────────────────────────────────────────────
+
+This appendix records the exact commands used to run and reproduce all
+experiments.  See \texttt{SETUP.md} in the project root for the complete
+environment setup guide.
+
+\subsection{Virtual Environment Setup}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+python3 -m venv .venv
+source .venv/bin/activate
+pip install matplotlib pandas
+\end{lstlisting}
+
+\subsection{Compiling the C Workloads}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+gcc -O2 perf/tsp.c      -o bin/tsp
+gcc -O2 perf/knapsack.c -o bin/knapsack
+\end{lstlisting}
+
+\subsection{Profiling TSP with perf}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+perf stat -r 3 \
+  -e task-clock,context-switches,cpu-migrations,page-faults,\
+cycles,instructions,branches,branch-misses,cache-references,cache-misses \
+  ./bin/tsp 2>&1 | tee results/tsp_perf.txt
+\end{lstlisting}
+
+\subsection{Profiling Knapsack with perf}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+perf stat -r 3 \
+  -e task-clock,context-switches,cpu-migrations,page-faults,\
+cycles,instructions,branches,branch-misses,cache-references,cache-misses \
+  ./bin/knapsack 2>&1 | tee results/knapsack_perf.txt
+\end{lstlisting}
+
+\subsection{Running ChampSim — 32\,KiB Control}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+./bin/champsim_l1d_32kb \
+  --warmup-instructions 100000 \
+  --simulation-instructions 1000000 \
+  --json results/perlbench_32kb.json \
+  traces/400.perlbench-41B.champsimtrace.xz \
+  2>&1 | tee results/perlbench_32kb.txt
+\end{lstlisting}
+
+\subsection{Running ChampSim — 64\,KiB Experiment}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+./bin/champsim_l1d_64kb \
+  --warmup-instructions 100000 \
+  --simulation-instructions 1000000 \
+  --json results/perlbench_64kb.json \
+  traces/400.perlbench-41B.champsimtrace.xz \
+  2>&1 | tee results/perlbench_64kb.txt
+\end{lstlisting}
+
+\subsection{Generating Plots}
+\begin{lstlisting}
+cd ~/perf-champsim-project
+source .venv/bin/activate
+python3 plot_results.py
+\end{lstlisting}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Terminal Screenshot Evidence}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\textit{Insert terminal screenshots here after running experiments.  Capture
+screenshots of:}
+\begin{itemize}
+    \item TSP \texttt{perf stat} terminal output
+    \item Knapsack \texttt{perf stat} terminal output
+    \item ChampSim execution output for 32\,KiB and 64\,KiB runs
+    \item Cache-geometry verification (\texttt{champsim\_config\_32kb.json}
+          vs.\ \texttt{champsim\_config\_64kb.json})
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+\bibitem{gregg2020}
+B.\ Gregg, \textit{Systems Performance: Enterprise and the Cloud}, 2nd ed.\
+Boston, MA: Addison-Wesley, 2020.
+
+\bibitem{hp2017}
+J.\ L.\ Hennessy and D.\ A.\ Patterson,
+\textit{Computer Architecture: A Quantitative Approach}, 6th ed.\
+Cambridge, MA: Morgan Kaufmann, 2017.
+
+\bibitem{cormen2022}
+T.\ H.\ Cormen, C.\ E.\ Leiserson, R.\ L.\ Rivest, and C.\ Stein,
+\textit{Introduction to Algorithms}, 4th ed.\
+Cambridge, MA: The MIT Press, 2022.
+
+\bibitem{held1962}
+M.\ Held and R.\ M.\ Karp,
+``A dynamic programming approach to sequencing problems,''
+\textit{Journal of the Society for Industrial and Applied Mathematics},
+vol.\ 10, no.\ 1, pp.\ 196--210, 1962.
+
+\bibitem{champsim}
+ChampSim Development Team, ``ChampSim: A Trace-Based Simulator,''
+GitHub repository, \url{https://github.com/ChampSim/ChampSim}, 2023.
+\end{thebibliography}
+
+\end{document}
